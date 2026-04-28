@@ -1,0 +1,12 @@
+config.json
+google_credentials.json
+vinyl.db
+cert.pem
+key.pem
+venv/
+venv-win/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.claude/

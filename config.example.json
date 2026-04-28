@@ -1,0 +1,14 @@
+{
+    "discogs_token": "",
+    "gemini_api_key": "",
+    "spotify_client_id": "",
+    "spotify_client_secret": "",
+    "owner_pin": "",
+    "_notes": {
+        "discogs_token": "Free — create at https://www.discogs.com/settings/developers under 'Generate new token'",
+        "gemini_api_key": "From https://aistudio.google.com/apikey — used for photo identification (~$0.00002/photo)",
+        "spotify_client_id": "From https://developer.spotify.com/dashboard — create a free app, copy the Client ID",
+        "spotify_client_secret": "From the same Spotify app dashboard — copy the Client Secret",
+        "owner_pin": "Set a PIN to enable visitor/owner mode. Leave empty for no access control."
+    }
+}
