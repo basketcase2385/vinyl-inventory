@@ -81,7 +81,7 @@ def icon():
 @app.route("/service-worker.js")
 def service_worker():
     js = """
-const CACHE = 'vinyl-v3';
+const CACHE = 'vinyl-v4';
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/', '/static/quagga.min.js'])));
   self.skipWaiting();
