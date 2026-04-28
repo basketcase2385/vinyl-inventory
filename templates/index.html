@@ -1078,11 +1078,15 @@ function startEdit() {
   document.getElementById('e-market-value').value   = r.market_value   != null ? r.market_value   : '';
   document.getElementById('e-cover-url').value      = r.cover_url || '';
 
+  document.getElementById('detail-cover').style.display = 'none';
   document.querySelector('.detail-body').style.display = 'none';
   document.getElementById('edit-form').style.display = '';
+  document.getElementById('detail-inner').scrollTop = 0;
 }
 
 function cancelEdit() {
+  const cover = document.getElementById('detail-cover');
+  cover.style.display = (currentRecord && currentRecord.cover_url) ? 'block' : 'none';
   document.querySelector('.detail-body').style.display = '';
   document.getElementById('edit-form').style.display = 'none';
 }
