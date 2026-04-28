@@ -173,7 +173,7 @@ def list_records():
     sort  = request.args.get("sort", "date_added")
     order = request.args.get("order", "desc").upper()
 
-    allowed_sorts = {"artist", "title", "year", "date_added", "format", "label"}
+    allowed_sorts = {"artist", "title", "year", "date_added", "format", "label", "average_sell_price"}
     if sort not in allowed_sorts:
         sort = "date_added"
     if order not in ("ASC", "DESC"):
@@ -184,6 +184,11 @@ def list_records():
         order_clause = (
             f"artist COLLATE NOCASE {order}, "
             f"CASE WHEN year IS NULL THEN 9999 ELSE year END ASC"
+        )
+    elif sort == "average_sell_price":
+        order_clause = (
+            f"CASE WHEN average_sell_price IS NULL THEN 1 ELSE 0 END ASC, "
+            f"average_sell_price {order}"
         )
     else:
         order_clause = f"{sort} COLLATE NOCASE {order}"
