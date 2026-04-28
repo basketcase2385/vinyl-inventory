@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS records (
     genres          TEXT,
     purchase_price  REAL,
     market_value    REAL,
+    average_sell_price REAL,
     cover_url       TEXT,
     discogs_id      INTEGER,
     date_added      TEXT    NOT NULL DEFAULT (date('now'))
@@ -36,6 +37,10 @@ def init_db():
         conn.executescript(SCHEMA_SQL)
         try:
             conn.execute("ALTER TABLE records ADD COLUMN spotify_url TEXT")
+        except Exception:
+            pass  # column already exists
+        try:
+            conn.execute("ALTER TABLE records ADD COLUMN average_sell_price REAL")
         except Exception:
             pass  # column already exists
 

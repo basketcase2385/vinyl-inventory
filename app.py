@@ -32,6 +32,15 @@ def _is_owner():
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     return token in _valid_tokens
 
+
+def _num_or_none(value):
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
 # --- DB init ---------------------------------------------------------------
 db.init_db()
 
@@ -224,8 +233,9 @@ def add_record():
             cur = conn.execute(
                 """INSERT INTO records
                    (artist, title, year, format, label, catalog_number,
-                    genres, purchase_price, market_value, cover_url, discogs_id, spotify_url)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    genres, purchase_price, market_value, average_sell_price,
+                    cover_url, discogs_id, spotify_url)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     artist,
                     title,
@@ -234,8 +244,9 @@ def add_record():
                     data.get("label",          "").strip(),
                     data.get("catalog_number", "").strip(),
                     data.get("genres",         "").strip(),
-                    data.get("purchase_price") or None,
-                    data.get("market_value")   or None,
+                    _num_or_none(data.get("purchase_price")),
+                    _num_or_none(data.get("market_value")),
+                    _num_or_none(data.get("average_sell_price")),
                     data.get("cover_url",      "").strip(),
                     data.get("discogs_id")     or None,
                     spotify_url,
@@ -258,7 +269,8 @@ def update_record(record_id):
             conn.execute(
                 """UPDATE records SET
                    artist=?, title=?, year=?, format=?, label=?, catalog_number=?,
-                   genres=?, purchase_price=?, market_value=?, cover_url=?, discogs_id=?
+                   genres=?, purchase_price=?, market_value=?, average_sell_price=?,
+                   cover_url=?, discogs_id=?
                    WHERE id=?""",
                 (
                     data.get("artist",         "").strip(),
@@ -268,8 +280,9 @@ def update_record(record_id):
                     data.get("label",          "").strip(),
                     data.get("catalog_number", "").strip(),
                     data.get("genres",         "").strip(),
-                    data.get("purchase_price") or None,
-                    data.get("market_value")   or None,
+                    _num_or_none(data.get("purchase_price")),
+                    _num_or_none(data.get("market_value")),
+                    _num_or_none(data.get("average_sell_price")),
                     data.get("cover_url",      "").strip(),
                     data.get("discogs_id")     or None,
                     record_id,
@@ -301,6 +314,58 @@ def refresh_spotify(record_id):
         if url:
             conn.execute("UPDATE records SET spotify_url=? WHERE id=?", (url, record_id))
     return jsonify({"spotify_url": url})
+
+
+@app.route("/api/records/backfill-average-sell", methods=["POST"])
+def backfill_average_sell_price():
+    if not _is_owner():
+        return jsonify({"error": "Forbidden"}), 403
+    if not DISCOGS_TOKEN:
+        return _discogs_error()
+
+    data = request.get_json(silent=True) or {}
+    try:
+        limit = int(data.get("limit", 100))
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 500))
+
+    with db.get_db() as conn:
+        rows = conn.execute(
+            """SELECT id, discogs_id
+               FROM records
+               WHERE average_sell_price IS NULL
+                 AND discogs_id IS NOT NULL
+               ORDER BY id ASC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+        updated = 0
+        checked = 0
+        rate_limited = False
+        for row in rows:
+            checked += 1
+            detail = dg.get_release(row["discogs_id"], DISCOGS_TOKEN)
+            if detail is None:
+                continue
+            if detail.get("_rate_limited"):
+                rate_limited = True
+                break
+            avg = detail.get("average_sell_price")
+            if avg is None:
+                continue
+            conn.execute(
+                "UPDATE records SET average_sell_price=? WHERE id=?",
+                (avg, row["id"]),
+            )
+            updated += 1
+
+    return jsonify({
+        "checked": checked,
+        "updated": updated,
+        "rate_limited": rate_limited,
+    })
 
 
 # --- Discogs integration --------------------------------------------------

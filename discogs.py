@@ -80,6 +80,7 @@ def _normalize_release(data: dict) -> dict:
         artist, _ = _parse_artist_title(data.get("title", ""))
 
     title = data.get("title", "")
+    average_sell_price = _extract_average_sell_price(data)
 
     return {
         "discogs_id":     data.get("id"),
@@ -91,7 +92,30 @@ def _normalize_release(data: dict) -> dict:
         "catalog_number": catno,
         "genres":         ", ".join(genres),
         "cover_url":      cover,
+        "average_sell_price": average_sell_price,
     }
+
+
+def _extract_average_sell_price(data: dict):
+    candidates = [
+        data.get("average_sale_price"),
+        data.get("marketplace_stats", {}).get("average_price"),
+        data.get("marketplace_stats", {}).get("median_price"),
+        data.get("lowest_price"),
+    ]
+
+    for value in candidates:
+        if isinstance(value, dict):
+            value = value.get("value")
+        if value is None:
+            continue
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            continue
+        if num >= 0:
+            return round(num, 2)
+    return None
 
 
 def search_barcode(barcode: str, token: str) -> list[dict]:
