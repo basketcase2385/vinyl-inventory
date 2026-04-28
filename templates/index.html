@@ -1115,8 +1115,8 @@ async function saveEdit() {
       method: 'PUT', headers: authHeaders(), body: JSON.stringify(payload),
     });
     if (!resp.ok) {
-      const errData = await resp.json().catch(() => ({}));
-      showToast('Save failed: ' + (errData.error || resp.status), 'error');
+      const errMsg = await getApiErrorMessage(resp, `HTTP ${resp.status}`);
+      showToast(`Save failed: ${errMsg}`, 'error');
       return;
     }
     showToast('Saved');
@@ -1554,12 +1554,31 @@ async function fillAndSaveFromRelease(releaseId) {
       discogs_id:     data.discogs_id     || null,
     };
 
+    const artist = payload.artist.trim();
+    const title = payload.title.trim();
+    if (!artist || !title) {
+      setStatus(statusEl, 'Could not save: Discogs release is missing artist or title.');
+      showToast('Artist and title are required before saving', 'error');
+      return;
+    }
+    payload.artist = artist;
+    payload.title = title;
+
     const saveResp = await fetch('/api/records', {
       method: 'POST', headers: authHeaders(), body: JSON.stringify(payload),
     });
-    if (!saveResp.ok) { setStatus(statusEl, 'Save failed.'); return; }
+    if (!saveResp.ok) {
+      const errMsg = await getApiErrorMessage(saveResp, 'Save failed');
+      if (saveResp.status === 403) {
+        setStatus(statusEl, 'Save failed: owner access required. Re-enter PIN and try again.');
+      } else {
+        setStatus(statusEl, `Save failed: ${esc(errMsg)}`);
+      }
+      showToast(`Save failed: ${errMsg}`, 'error');
+      return;
+    }
 
-    showToast(`Saved: ${payload.artist} — ${payload.title}`);
+    showToast(`Saved: ${artist} — ${title}`);
     setStatus(statusEl, '');
     if (scanMode === 'photo') {
       document.getElementById('photo-preview').style.display = 'none';
@@ -1635,7 +1654,7 @@ async function saveRecord() {
     const resp = await fetch('/api/records', {
       method: 'POST', headers: authHeaders(), body: JSON.stringify(payload),
     });
-    if (!resp.ok) throw new Error((await resp.json()).error);
+    if (!resp.ok) throw new Error(await getApiErrorMessage(resp, 'Save failed'));
     showToast(`Saved: ${artist} — ${title}`);
     clearAddForm();
     document.getElementById('discogs-results').style.display  = 'none';
@@ -1674,6 +1693,14 @@ function parseIntOrNull(v) {
 function parseFloatOrNull(v) {
   const n = parseFloat(v);
   return isNaN(n) ? null : n;
+}
+
+async function getApiErrorMessage(resp, fallback = 'Request failed') {
+  const errData = await resp.json().catch(() => ({}));
+  if (errData && typeof errData.error === 'string' && errData.error.trim()) {
+    return errData.error.trim();
+  }
+  return fallback;
 }
 
 function setStatus(id, html) {

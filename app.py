@@ -1,4 +1,4 @@
-import json, secrets
+import json, secrets, sqlite3
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template, Response, redirect
 
@@ -219,27 +219,30 @@ def add_record():
     if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
         spotify_url = sp.find_album_url(artist, title, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET)
 
-    with db.get_db() as conn:
-        cur = conn.execute(
-            """INSERT INTO records
-               (artist, title, year, format, label, catalog_number,
-                genres, purchase_price, market_value, cover_url, discogs_id, spotify_url)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                artist,
-                title,
-                data.get("year")            or None,
-                data.get("format",         "").strip(),
-                data.get("label",          "").strip(),
-                data.get("catalog_number", "").strip(),
-                data.get("genres",         "").strip(),
-                data.get("purchase_price") or None,
-                data.get("market_value")   or None,
-                data.get("cover_url",      "").strip(),
-                data.get("discogs_id")     or None,
-                spotify_url,
-            ),
-        )
+    try:
+        with db.get_db() as conn:
+            cur = conn.execute(
+                """INSERT INTO records
+                   (artist, title, year, format, label, catalog_number,
+                    genres, purchase_price, market_value, cover_url, discogs_id, spotify_url)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    artist,
+                    title,
+                    data.get("year")            or None,
+                    data.get("format",         "").strip(),
+                    data.get("label",          "").strip(),
+                    data.get("catalog_number", "").strip(),
+                    data.get("genres",         "").strip(),
+                    data.get("purchase_price") or None,
+                    data.get("market_value")   or None,
+                    data.get("cover_url",      "").strip(),
+                    data.get("discogs_id")     or None,
+                    spotify_url,
+                ),
+            )
+    except sqlite3.Error as e:
+        return jsonify({"error": f"Database save failed: {e}"}), 500
     return jsonify({"id": cur.lastrowid}), 201
 
 
@@ -248,29 +251,32 @@ def update_record(record_id):
     if not _is_owner():
         return jsonify({"error": "Forbidden"}), 403
     data = request.get_json(silent=True) or {}
-    with db.get_db() as conn:
-        if not conn.execute("SELECT id FROM records WHERE id=?", (record_id,)).fetchone():
-            return jsonify({"error": "Not found"}), 404
-        conn.execute(
-            """UPDATE records SET
-               artist=?, title=?, year=?, format=?, label=?, catalog_number=?,
-               genres=?, purchase_price=?, market_value=?, cover_url=?, discogs_id=?
-               WHERE id=?""",
-            (
-                data.get("artist",         "").strip(),
-                data.get("title",          "").strip(),
-                data.get("year")            or None,
-                data.get("format",         "").strip(),
-                data.get("label",          "").strip(),
-                data.get("catalog_number", "").strip(),
-                data.get("genres",         "").strip(),
-                data.get("purchase_price") or None,
-                data.get("market_value")   or None,
-                data.get("cover_url",      "").strip(),
-                data.get("discogs_id")     or None,
-                record_id,
-            ),
-        )
+    try:
+        with db.get_db() as conn:
+            if not conn.execute("SELECT id FROM records WHERE id=?", (record_id,)).fetchone():
+                return jsonify({"error": "Not found"}), 404
+            conn.execute(
+                """UPDATE records SET
+                   artist=?, title=?, year=?, format=?, label=?, catalog_number=?,
+                   genres=?, purchase_price=?, market_value=?, cover_url=?, discogs_id=?
+                   WHERE id=?""",
+                (
+                    data.get("artist",         "").strip(),
+                    data.get("title",          "").strip(),
+                    data.get("year")            or None,
+                    data.get("format",         "").strip(),
+                    data.get("label",          "").strip(),
+                    data.get("catalog_number", "").strip(),
+                    data.get("genres",         "").strip(),
+                    data.get("purchase_price") or None,
+                    data.get("market_value")   or None,
+                    data.get("cover_url",      "").strip(),
+                    data.get("discogs_id")     or None,
+                    record_id,
+                ),
+            )
+    except sqlite3.Error as e:
+        return jsonify({"error": f"Database update failed: {e}"}), 500
     return jsonify({"ok": True})
 
 
