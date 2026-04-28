@@ -1015,7 +1015,7 @@ async function openDetail(id) {
     ['Genres',     r.genres],
     ['Paid',       r.purchase_price != null ? formatCurrency(r.purchase_price) : null],
     ['Value',      r.market_value   != null ? formatCurrency(r.market_value)   : null],
-    ['Average Sell', r.average_sell_price != null ? formatCurrency(r.average_sell_price) : null],
+    ['Average Sell', r.average_sell_price != null ? formatCurrency(r.average_sell_price) : '—'],
     ['Added',      r.date_added],
     ['Discogs ID', r.discogs_id],
   ];
