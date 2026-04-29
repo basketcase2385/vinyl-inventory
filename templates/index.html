@@ -789,7 +789,7 @@ let photoBlob     = null;
 // Auth
 let isOwner     = false;
 let authEnabled = false;
-let ownerToken  = null;
+let csrfToken   = '';
 
 // Camera state
 let scanStream   = null;   // MediaStream for barcode scanner
@@ -825,14 +825,16 @@ async function initAuth() {
   }
 
   document.getElementById('lock-btn').style.display = '';
-
-  const saved = JSON.parse(localStorage.getItem('ownerSession') || 'null');
-  if (saved && saved.expiry > Date.now()) {
-    ownerToken = saved.token;
-    setOwner(true);
-  } else {
-    setOwner(false);
-  }
+  try {
+    const sResp = await fetch('/api/auth/session');
+    const sData = await sResp.json();
+    if (sResp.ok && sData.owner) {
+      csrfToken = sData.csrf_token || '';
+      setOwner(true);
+      return;
+    }
+  } catch (_) {}
+  setOwner(false);
 }
 
 function setOwner(val) {
@@ -856,8 +858,7 @@ function toggleLock() {
   if (!authEnabled) return;
   if (isOwner) {
     fetch('/api/auth/logout', { method: 'POST', headers: authHeaders() });
-    ownerToken = null;
-    localStorage.removeItem('ownerSession');
+    csrfToken = '';
     setOwner(false);
   } else {
     openPinModal();
@@ -866,7 +867,7 @@ function toggleLock() {
 
 function authHeaders() {
   const h = { 'Content-Type': 'application/json' };
-  if (ownerToken) h['Authorization'] = 'Bearer ' + ownerToken;
+  if (csrfToken) h['X-CSRF-Token'] = csrfToken;
   return h;
 }
 
@@ -882,23 +883,20 @@ function closePinModal() {
 }
 
 async function submitPin() {
-  const pin = document.getElementById('pin-input').value;
+  const password = document.getElementById('pin-input').value;
   try {
     const resp = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pin }),
+      body: JSON.stringify({ password }),
     });
     const data = await resp.json();
-    if (data.token) {
-      ownerToken = data.token;
-      localStorage.setItem('ownerSession', JSON.stringify({
-        token: ownerToken, expiry: Date.now() + 86400000,
-      }));
+    if (resp.ok && data.ok) {
+      csrfToken = data.csrf_token || '';
       setOwner(true);
       closePinModal();
     } else {
-      document.getElementById('pin-error').textContent = 'Wrong PIN';
+      document.getElementById('pin-error').textContent = data.error || 'Login failed';
       document.getElementById('pin-input').value = '';
       document.getElementById('pin-input').focus();
     }
@@ -1583,7 +1581,7 @@ async function fillAndSaveFromRelease(releaseId) {
     if (!saveResp.ok) {
       const errMsg = await getApiErrorMessage(saveResp, 'Save failed');
       if (saveResp.status === 403) {
-        setStatus(statusEl, 'Save failed: owner access required. Re-enter PIN and try again.');
+        setStatus(statusEl, 'Save failed: owner access required. Re-authenticate and try again.');
       } else {
         setStatus(statusEl, `Save failed: ${esc(errMsg)}`);
       }
@@ -1750,7 +1748,7 @@ document.addEventListener('keydown', e => {
 <div id="pin-modal">
   <div class="pin-box">
     <h3>Owner Login</h3>
-    <input type="password" id="pin-input" placeholder="PIN" inputmode="numeric" maxlength="20" autocomplete="off">
+    <input type="password" id="pin-input" placeholder="Password" maxlength="64" autocomplete="current-password">
     <div class="pin-error" id="pin-error"></div>
     <button class="btn btn-primary" onclick="submitPin()">Unlock</button>
     <button class="btn btn-secondary" onclick="closePinModal()">Cancel</button>

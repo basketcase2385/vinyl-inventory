@@ -3,12 +3,19 @@
     "gemini_api_key": "",
     "spotify_client_id": "",
     "spotify_client_secret": "",
-    "owner_pin": "",
+    "owner_password_hash": "",
+    "session_ttl_hours": 12,
+    "session_idle_minutes": 30,
+    "login_max_attempts": 8,
+    "login_window_seconds": 600,
+    "login_lockout_seconds": 900,
+    "trusted_origins": [],
     "_notes": {
         "discogs_token": "Free — create at https://www.discogs.com/settings/developers under 'Generate new token'",
         "gemini_api_key": "From https://aistudio.google.com/apikey — used for photo identification (~$0.00002/photo)",
         "spotify_client_id": "From https://developer.spotify.com/dashboard — create a free app, copy the Client ID",
         "spotify_client_secret": "From the same Spotify app dashboard — copy the Client Secret",
-        "owner_pin": "Set a PIN to enable visitor/owner mode. Leave empty for no access control."
+        "owner_password_hash": "Password hash generated with Werkzeug generate_password_hash(). Leave empty to disable auth (not recommended).",
+        "trusted_origins": "Optional list of exact allowed browser origins for API requests, e.g. [\"https://vinyl.example.com\"]"
     }
 }

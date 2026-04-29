@@ -1,6 +1,12 @@
-import json, secrets, sqlite3
+import hashlib
+import json
+import os
+import secrets
+import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from flask import Flask, request, jsonify, render_template, Response, redirect
+from flask import Flask, request, jsonify, render_template, Response, redirect, make_response, g
+from werkzeug.security import check_password_hash, generate_password_hash
 
 import db
 import discogs as dg
@@ -8,6 +14,7 @@ import vision
 import spotify as sp
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # 5 MB hard cap for request bodies
 
 # --- Config ---------------------------------------------------------------
 _config_path = Path(__file__).parent / "config.json"
@@ -21,16 +28,130 @@ DISCOGS_TOKEN         = CONFIG.get("discogs_token",         "")
 GEMINI_API_KEY        = CONFIG.get("gemini_api_key",        "")
 SPOTIFY_CLIENT_ID     = CONFIG.get("spotify_client_id",     "")
 SPOTIFY_CLIENT_SECRET = CONFIG.get("spotify_client_secret", "")
-OWNER_PIN             = CONFIG.get("owner_pin",             "").strip()
+OWNER_PASSWORD_HASH   = (os.environ.get("VINYL_OWNER_PASSWORD_HASH") or CONFIG.get("owner_password_hash", "")).strip()
+if not OWNER_PASSWORD_HASH and (CONFIG.get("owner_pin", "").strip()):
+    # Backward-compatible fallback: treat legacy owner_pin as initial password.
+    OWNER_PASSWORD_HASH = generate_password_hash(CONFIG.get("owner_pin", "").strip())
+SESSION_TTL_HOURS     = int(CONFIG.get("session_ttl_hours", 12))
+SESSION_IDLE_MINUTES  = int(CONFIG.get("session_idle_minutes", 30))
+COOKIE_NAME           = "__Host-vinyl_owner_session"
+LOGIN_MAX_ATTEMPTS    = int(CONFIG.get("login_max_attempts", 8))
+LOGIN_WINDOW_SECONDS  = int(CONFIG.get("login_window_seconds", 600))
+LOCKOUT_SECONDS       = int(CONFIG.get("login_lockout_seconds", 900))
+TRUSTED_ORIGINS       = set(CONFIG.get("trusted_origins", []))
 
 # --- Auth -----------------------------------------------------------------
-_valid_tokens: set = set()
+_login_attempts: dict[str, list[float]] = {}
+_lockouts: dict[str, float] = {}
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_iso(s: str) -> datetime:
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _client_ip() -> str:
+    fwd = request.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def _prune_login_attempts(ip: str, now_ts: float):
+    window_start = now_ts - LOGIN_WINDOW_SECONDS
+    attempts = [ts for ts in _login_attempts.get(ip, []) if ts >= window_start]
+    _login_attempts[ip] = attempts
+
+
+def _is_locked_out(ip: str, now_ts: float) -> bool:
+    unlock_ts = _lockouts.get(ip, 0)
+    if now_ts < unlock_ts:
+        return True
+    if ip in _lockouts and now_ts >= unlock_ts:
+        _lockouts.pop(ip, None)
+    return False
+
+
+def _record_login_failure(ip: str, now_ts: float):
+    _prune_login_attempts(ip, now_ts)
+    attempts = _login_attempts.setdefault(ip, [])
+    attempts.append(now_ts)
+    if len(attempts) >= LOGIN_MAX_ATTEMPTS:
+        _lockouts[ip] = now_ts + LOCKOUT_SECONDS
+        _login_attempts[ip] = []
+
+
+def _create_session() -> tuple[str, str]:
+    token = secrets.token_urlsafe(48)
+    csrf_token = secrets.token_urlsafe(32)
+    now = _utcnow()
+    expires = now + timedelta(hours=SESSION_TTL_HOURS)
+    with db.get_db() as conn:
+        conn.execute(
+            """INSERT INTO auth_sessions (token_hash, csrf_token, expires_at, last_seen_at)
+               VALUES (?,?,?,?)""",
+            (_hash_token(token), csrf_token, _iso(expires), _iso(now)),
+        )
+    return token, csrf_token
+
+
+def _get_session_from_cookie():
+    token = request.cookies.get(COOKIE_NAME, "").strip()
+    if not token:
+        return None
+    token_hash = _hash_token(token)
+    now = _utcnow()
+    with db.get_db() as conn:
+        row = conn.execute(
+            """SELECT id, csrf_token, expires_at, last_seen_at, revoked
+               FROM auth_sessions WHERE token_hash=?""",
+            (token_hash,),
+        ).fetchone()
+        if not row:
+            return None
+        if row["revoked"]:
+            return None
+        expires_at = _parse_iso(row["expires_at"])
+        if expires_at <= now:
+            conn.execute("UPDATE auth_sessions SET revoked=1 WHERE id=?", (row["id"],))
+            return None
+        last_seen = _parse_iso(row["last_seen_at"])
+        if last_seen + timedelta(minutes=SESSION_IDLE_MINUTES) <= now:
+            conn.execute("UPDATE auth_sessions SET revoked=1 WHERE id=?", (row["id"],))
+            return None
+        conn.execute("UPDATE auth_sessions SET last_seen_at=? WHERE id=?", (_iso(now), row["id"]))
+        return {"id": row["id"], "csrf_token": row["csrf_token"], "token": token}
+
 
 def _is_owner():
-    if not OWNER_PIN:
+    if not OWNER_PASSWORD_HASH:
         return True
-    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    return token in _valid_tokens
+    if not hasattr(g, "owner_session"):
+        g.owner_session = _get_session_from_cookie()
+    return bool(g.owner_session)
+
+
+def _require_csrf():
+    if not OWNER_PASSWORD_HASH:
+        return True
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return True
+    sess = getattr(g, "owner_session", None) or _get_session_from_cookie()
+    if not sess:
+        return False
+    header = request.headers.get("X-CSRF-Token", "")
+    return bool(header) and secrets.compare_digest(header, sess["csrf_token"])
 
 
 def _num_or_none(value):
@@ -40,6 +161,43 @@ def _num_or_none(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+@app.before_request
+def api_origin_guard():
+    if not request.path.startswith("/api/"):
+        return None
+    origin = request.headers.get("Origin")
+    if not origin:
+        return None
+    allowed = {f"{request.scheme}://{request.host}", f"https://{request.host}"}
+    allowed.update(TRUSTED_ORIGINS)
+    if origin not in allowed:
+        return jsonify({"error": "Origin not allowed"}), 403
+    return None
+
+
+@app.after_request
+def add_security_headers(resp):
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    resp.headers["Permissions-Policy"] = "camera=(self), microphone=()"
+    if request.path == "/" or request.path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-store"
+    csp = (
+        "default-src 'self'; "
+        "img-src 'self' https: data:; "
+        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'"
+    )
+    resp.headers["Content-Security-Policy"] = csp
+    if request.headers.get("X-Forwarded-Proto", request.scheme) == "https":
+        resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return resp
 
 # --- DB init ---------------------------------------------------------------
 db.init_db()
@@ -94,7 +252,7 @@ self.addEventListener('activate', e =>
   )
 );
 self.addEventListener('fetch', e => {
-  // Always hit the network for API calls — never serve from cache
+  // Never cache API responses, especially authenticated owner traffic.
   if (e.request.url.includes('/api/')) {
     e.respondWith(fetch(e.request));
     return;
@@ -129,15 +287,9 @@ self.addEventListener('fetch', e => {
 
 @app.route("/")
 def index():
-    # On the HTTP port, redirect non-iOS devices to HTTPS for camera support.
-    # Skip when behind Cloudflare — CF already provides HTTPS to the visitor.
-    if request.scheme == "http" and "CF-Visitor" not in request.headers:
-        ua = request.headers.get("User-Agent", "")
-        is_ios = "iPhone" in ua or "iPad" in ua or "iPod" in ua
-        cert = Path(__file__).parent / "cert.pem"
-        if not is_ios and cert.exists():
-            host = request.host.split(":")[0]
-            return redirect(f"https://{host}:5001", code=302)
+    if request.headers.get("X-Forwarded-Proto", request.scheme) == "http":
+        host = request.host
+        return redirect(f"https://{host}{request.full_path}".rstrip("?"), code=302)
     return render_template("index.html")
 
 
@@ -145,24 +297,61 @@ def index():
 
 @app.route("/api/auth/status")
 def auth_status():
-    return jsonify({"auth_enabled": bool(OWNER_PIN)})
+    return jsonify({"auth_enabled": bool(OWNER_PASSWORD_HASH)})
+
+
+@app.route("/api/auth/session")
+def auth_session():
+    if not OWNER_PASSWORD_HASH:
+        return jsonify({"owner": True, "csrf_token": ""})
+    if not _is_owner():
+        return jsonify({"owner": False}), 401
+    return jsonify({"owner": True, "csrf_token": g.owner_session["csrf_token"]})
 
 
 @app.route("/api/auth/login", methods=["POST"])
 def auth_login():
+    if not OWNER_PASSWORD_HASH:
+        return jsonify({"error": "Auth is not configured"}), 400
+    now_ts = _utcnow().timestamp()
+    ip = _client_ip()
+    if _is_locked_out(ip, now_ts):
+        return jsonify({"error": "Too many login attempts. Try again later."}), 429
+
     data = request.get_json(silent=True) or {}
-    if OWNER_PIN and data.get("pin") == OWNER_PIN:
-        token = secrets.token_hex(32)
-        _valid_tokens.add(token)
-        return jsonify({"token": token})
-    return jsonify({"error": "Wrong PIN"}), 401
+    password = data.get("password", "")
+    if not password or not check_password_hash(OWNER_PASSWORD_HASH, password):
+        _record_login_failure(ip, now_ts)
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    _login_attempts.pop(ip, None)
+    _lockouts.pop(ip, None)
+    token, csrf_token = _create_session()
+    resp = make_response(jsonify({"ok": True, "csrf_token": csrf_token}))
+    secure_cookie = not request.host.startswith("127.0.0.1") and not request.host.startswith("localhost")
+    resp.set_cookie(
+        COOKIE_NAME,
+        token,
+        httponly=True,
+        secure=secure_cookie,
+        samesite="Strict",
+        max_age=int(timedelta(hours=SESSION_TTL_HOURS).total_seconds()),
+        path="/",
+    )
+    return resp
 
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
-    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    _valid_tokens.discard(token)
-    return jsonify({"ok": True})
+    if OWNER_PASSWORD_HASH and not _require_csrf():
+        return jsonify({"error": "Invalid CSRF token"}), 403
+    token = request.cookies.get(COOKIE_NAME, "")
+    if token:
+        with db.get_db() as conn:
+            conn.execute("UPDATE auth_sessions SET revoked=1 WHERE token_hash=?", (_hash_token(token),))
+    resp = make_response(jsonify({"ok": True}))
+    resp.delete_cookie(COOKIE_NAME, path="/")
+    return resp
 
 
 # --- Collection CRUD ------------------------------------------------------
@@ -228,7 +417,9 @@ def get_record(record_id):
 @app.route("/api/records", methods=["POST"])
 def add_record():
     if not _is_owner():
-        return jsonify({"error": "Forbidden"}), 403
+        return jsonify({"error": "Unauthorized"}), 401
+    if not _require_csrf():
+        return jsonify({"error": "Invalid CSRF token"}), 403
     data = request.get_json(silent=True) or {}
     artist = data.get("artist", "").strip()
     title  = data.get("title",  "").strip()
@@ -271,7 +462,9 @@ def add_record():
 @app.route("/api/records/<int:record_id>", methods=["PUT"])
 def update_record(record_id):
     if not _is_owner():
-        return jsonify({"error": "Forbidden"}), 403
+        return jsonify({"error": "Unauthorized"}), 401
+    if not _require_csrf():
+        return jsonify({"error": "Invalid CSRF token"}), 403
     data = request.get_json(silent=True) or {}
     try:
         with db.get_db() as conn:
@@ -307,7 +500,9 @@ def update_record(record_id):
 @app.route("/api/records/<int:record_id>", methods=["DELETE"])
 def delete_record(record_id):
     if not _is_owner():
-        return jsonify({"error": "Forbidden"}), 403
+        return jsonify({"error": "Unauthorized"}), 401
+    if not _require_csrf():
+        return jsonify({"error": "Invalid CSRF token"}), 403
     with db.get_db() as conn:
         conn.execute("DELETE FROM records WHERE id = ?", (record_id,))
     return jsonify({"ok": True})
@@ -315,6 +510,10 @@ def delete_record(record_id):
 
 @app.route("/api/records/<int:record_id>/spotify", methods=["POST"])
 def refresh_spotify(record_id):
+    if not _is_owner():
+        return jsonify({"error": "Unauthorized"}), 401
+    if not _require_csrf():
+        return jsonify({"error": "Invalid CSRF token"}), 403
     if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
         return jsonify({"error": "Spotify not configured"}), 503
     with db.get_db() as conn:
@@ -330,7 +529,9 @@ def refresh_spotify(record_id):
 @app.route("/api/records/backfill-average-sell", methods=["POST"])
 def backfill_average_sell_price():
     if not _is_owner():
-        return jsonify({"error": "Forbidden"}), 403
+        return jsonify({"error": "Unauthorized"}), 401
+    if not _require_csrf():
+        return jsonify({"error": "Invalid CSRF token"}), 403
     if not DISCOGS_TOKEN:
         return _discogs_error()
 
@@ -487,19 +688,7 @@ def stats():
 
 if __name__ == "__main__":
     from werkzeug.serving import make_server
-    import threading
-
-    cert = Path(__file__).parent / "cert.pem"
-    key  = Path(__file__).parent / "key.pem"
-
-    if cert.exists() and key.exists():
-        # HTTP on 5002 — works on any device without certificate trust (browsing, no camera)
-        http_server = make_server("0.0.0.0", 5002, app)
-        threading.Thread(target=http_server.serve_forever, daemon=True).start()
-        print("[startup] HTTP  on :5002 (all devices — browsing)", flush=True)
-        print("[startup] HTTPS on :5001 (camera scanning — Android)", flush=True)
-        # HTTPS on 5001 — required for getUserMedia (camera scanning)
-        make_server("0.0.0.0", 5001, app, ssl_context=(str(cert), str(key))).serve_forever()
-    else:
-        print("[startup] HTTP on :5001", flush=True)
-        make_server("0.0.0.0", 5001, app).serve_forever()
+    bind_host = os.environ.get("VINYL_BIND_HOST", "127.0.0.1")
+    bind_port = int(os.environ.get("VINYL_BIND_PORT", "5003"))
+    print(f"[startup] Internal app listener on {bind_host}:{bind_port}", flush=True)
+    make_server(bind_host, bind_port, app).serve_forever()

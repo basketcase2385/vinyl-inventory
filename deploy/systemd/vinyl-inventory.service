@@ -1,0 +1,22 @@
+[Unit]
+Description=Vinyl Inventory App (internal listener)
+After=network.target
+
+[Service]
+Type=simple
+User=dave
+Group=dave
+WorkingDirectory=/home/dave/vinyl-inventory
+Environment=VINYL_BIND_HOST=127.0.0.1
+Environment=VINYL_BIND_PORT=5003
+ExecStart=/home/dave/vinyl-inventory/venv/bin/python /home/dave/vinyl-inventory/app.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=/home/dave/vinyl-inventory
+
+[Install]
+WantedBy=multi-user.target

@@ -23,18 +23,10 @@ if [ ! -f "config.json" ]; then
 fi
 
 # Generate self-signed TLS cert if not present (required for camera access on mobile)
-if [ ! -f "cert.pem" ] || [ ! -f "key.pem" ]; then
-    echo "  Generating self-signed TLS certificate for HTTPS..."
-    ./venv/bin/python generate_cert.py
-fi
-
-PI_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo ""
-echo "  Starting Vinyl Inventory (HTTPS)..."
-echo "  Open on your phone: https://${PI_IP}:5001"
-echo ""
-echo "  First visit: tap 'Advanced' → 'Proceed to vinyl-inventory (unsafe)'"
-echo "  Then install via browser menu → 'Add to Home Screen'"
+echo "  Starting Vinyl Inventory internal listener..."
+echo "  Bind: ${VINYL_BIND_HOST:-127.0.0.1}:${VINYL_BIND_PORT:-5003}"
+echo "  Expect reverse proxy (Nginx/Caddy) to terminate TLS on 443."
 echo ""
 echo "  Press Ctrl+C to stop"
 echo ""
