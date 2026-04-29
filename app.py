@@ -189,7 +189,7 @@ def add_security_headers(resp):
         "default-src 'self'; "
         "img-src 'self' https: data:; "
         "style-src 'self' 'unsafe-inline'; "
-        "script-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
         "connect-src 'self'; "
         "frame-ancestors 'none'; "
         "base-uri 'self'"
