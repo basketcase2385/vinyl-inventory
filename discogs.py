@@ -80,13 +80,14 @@ def _normalize_release(data: dict) -> dict:
         artist, _ = _parse_artist_title(data.get("title", ""))
 
     title = data.get("title", "")
+    year = _extract_year(data)
     average_sell_price = _extract_average_sell_price(data)
 
     return {
         "discogs_id":     data.get("id"),
         "artist":         artist,
         "title":          title,
-        "year":           data.get("year"),
+        "year":           year,
         "format":         fmt_name,
         "label":          label,
         "catalog_number": catno,
@@ -118,6 +119,16 @@ def _extract_average_sell_price(data: dict):
     return None
 
 
+def _extract_year(data: dict):
+    year = data.get("year")
+    if isinstance(year, int):
+        return year
+    released = str(data.get("released") or "")
+    if len(released) >= 4 and released[:4].isdigit():
+        return int(released[:4])
+    return None
+
+
 def search_barcode(barcode: str, token: str) -> list[dict]:
     data = _get("/database/search", {"barcode": barcode, "token": token, "type": "release", "format": "Vinyl"})
     if data and data.get("_rate_limited"):
@@ -138,4 +149,14 @@ def get_release(release_id: int, token: str):
         return None
     if data.get("_rate_limited"):
         return {"_rate_limited": True}
-    return _normalize_release(data)
+    detail = _normalize_release(data)
+
+    master_id = data.get("master_id")
+    if master_id:
+        master = _get(f"/masters/{master_id}", {"token": token})
+        if master and not master.get("_rate_limited"):
+            master_year = master.get("year")
+            if isinstance(master_year, int):
+                detail["year"] = master_year
+
+    return detail

@@ -181,8 +181,14 @@ def list_records():
 
     # When sorting by artist, use year as secondary sort (nulls last)
     if sort == "artist":
+        artist_sort_key = (
+            "CASE "
+            "WHEN LOWER(artist) LIKE 'the %' THEN SUBSTR(artist, 5) "
+            "ELSE artist "
+            "END"
+        )
         order_clause = (
-            f"artist COLLATE NOCASE {order}, "
+            f"{artist_sort_key} COLLATE NOCASE {order}, "
             f"CASE WHEN year IS NULL THEN 9999 ELSE year END ASC"
         )
     elif sort == "average_sell_price":
